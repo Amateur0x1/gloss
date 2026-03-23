@@ -25,7 +25,7 @@
       "dist-electron/**",
       "package.json"
     ],
-    "asar": true,
+    "asar": false,
     "mac": {
       "category": "public.app-category.education",
       "gatekeeperAssess": false,

@@ -1,6 +1,7 @@
 import { startTransition, useEffect, useMemo, useRef, useState } from 'react'
 
 import './App.css'
+import DocumentWorker from './workers/document-worker.ts?worker'
 import { findTopMatches } from './lib/alignment'
 import type {
   DocumentLanguage,
@@ -14,8 +15,6 @@ const INITIAL_SLOT: DocumentSlotState = {
   status: 'idle',
   detail: '等待导入 PDF',
 }
-
-const DocumentWorker = new URL('./workers/document-worker.ts', import.meta.url)
 
 const SIDE_CONFIG: Record<DocumentLanguage, { title: string; subtitle: string }> = {
   zh: {
@@ -131,7 +130,7 @@ function App() {
     const previousWorker = workerRefs.current[payload.language]
     previousWorker?.terminate()
 
-    const worker = new Worker(DocumentWorker, { type: 'module' })
+    const worker = new DocumentWorker()
     workerRefs.current[payload.language] = worker
 
     return new Promise<Extract<ProcessDocumentResponse, { type: 'success' }>>((resolve, reject) => {
@@ -180,7 +179,17 @@ function App() {
       worker.onerror = (event) => {
         worker.terminate()
         delete workerRefs.current[payload.language]
-        reject(new Error(event.message || 'Worker 处理失败'))
+        const location =
+          event.filename && event.lineno
+            ? ` (${event.filename}:${event.lineno}${event.colno ? `:${event.colno}` : ''})`
+            : ''
+        reject(new Error((event.message || 'Worker 处理失败') + location))
+      }
+
+      worker.onmessageerror = () => {
+        worker.terminate()
+        delete workerRefs.current[payload.language]
+        reject(new Error('Worker 返回了无法反序列化的数据'))
       }
 
       worker.postMessage(payload, [payload.bytes.buffer])
