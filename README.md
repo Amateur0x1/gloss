@@ -1,54 +1,142 @@
 # Gloss
 
-一个纯本地运行的 macOS 桌面应用，面向多语言文本对读与学术研究。
+[中文说明](./README.zh-CN.md)
 
-当前版本支持：
+Gloss is a local-first macOS desktop app for multilingual parallel reading, passage alignment, and close textual comparison.
 
-- 导入中文译本 PDF
-- 导入英文原文 PDF
-- 本地抽取文本并切成句段
-- 使用多语言 embedding 模型在本机生成向量
-- 点击中文句段时，在英文侧定位最可能对应的原文片段
+The current version is designed for scholar-facing reading workflows: you import two documents, extract text locally, build multilingual embeddings on-device, and click a passage on one side to retrieve the most likely corresponding passage on the other side.
 
-## 技术栈
+## Why Gloss
 
-- Electron
-- React
-- TypeScript
-- `pdfjs-dist`
-- `@huggingface/transformers`
+Gloss is built for cases like:
 
-## 运行
+- reading a Chinese translation alongside an English original
+- comparing different translated editions of the same work
+- locating likely source passages from a translated excerpt
+- supporting close reading, annotation, and research-oriented bilingual study
+
+The app does not rely on a backend service. PDF parsing, embedding generation, and similarity search all happen locally on your machine.
+
+## Current Features
+
+- Local macOS desktop app built with Electron, React, and TypeScript
+- Import two documents for side-by-side comparison
+- Extract text from PDF files locally
+- Segment extracted text into sentence-like or short passage units
+- Generate multilingual embeddings on-device
+- Click a Chinese passage and retrieve the most likely English match
+- Show top candidate matches instead of only one result
+- Keep the heavy document-processing pipeline off the UI thread with a worker
+
+## How It Works
+
+Gloss currently follows this pipeline:
+
+1. Import a source document and a target document.
+2. Extract plain text from each PDF.
+3. Reconstruct lines and split the text into smaller segments.
+4. Encode segments with a multilingual sentence embedding model.
+5. Compare vectors across languages.
+6. Re-rank matches with lightweight neighborhood context.
+7. Highlight and scroll to the best target-side match.
+
+## Model
+
+Gloss currently uses the multilingual embedding model `Xenova/paraphrase-multilingual-MiniLM-L12-v2` through `@huggingface/transformers`.
+
+Important notes:
+
+- the first run downloads model assets to local cache
+- the full model repository contains multiple weight formats, but the app uses a quantized browser-compatible ONNX path
+- this is a practical first-pass retrieval model, not a final scholarly alignment model
+
+## Project Structure
+
+```text
+electron/                Electron main process and preload
+src/App.tsx              Main desktop UI
+src/lib/pdf.ts           Local PDF text extraction and segmentation
+src/lib/embeddings.ts    Embedding model loading and vector generation
+src/lib/alignment.ts     Cross-language similarity and lightweight reranking
+src/workers/             Background worker for heavy document processing
+```
+
+## Development
+
+Requirements:
+
+- Node.js
+- pnpm
+- macOS
+
+Install dependencies:
 
 ```bash
 cd /Users/zhourongchang/self/gloss
 pnpm install
-pnpm dev
 ```
 
-首次导入文档时，应用会下载多语言向量模型到本地缓存。
-
-## 打包前预览
+Start the desktop app in development mode:
 
 ```bash
 cd /Users/zhourongchang/self/gloss
+pnpm dev
+```
+
+Run lint:
+
+```bash
+pnpm lint
+```
+
+Build production assets:
+
+```bash
+pnpm build
+```
+
+Preview the desktop build:
+
+```bash
 pnpm desktop:preview
 ```
 
-## 当前边界
+## Current Limitations
 
-第一版是“基于文档提取文本的对读器”，不是逐字级原文版面映射器。
+This is still an early research prototype.
 
-也就是说：
+Current limitations include:
 
-- 现在是对“提取后的句段”做匹配
-- 适合平行文本、译文对应关系较稳定的书
-- 如果译文存在大量意译、删改、拆句合句，命中会下降
+- alignment is performed on extracted text segments, not native PDF coordinates
+- matching quality depends heavily on the quality of PDF text extraction
+- highly free translations, aggressive paraphrases, or merged/split sentences reduce accuracy
+- the current UX is optimized for Chinese-to-English lookup first
+- there is no persistent local library or saved indexing layer yet
 
-## 下一步适合继续做的增强
+## Roadmap
 
-- 支持双向检索：点英文反查中文
-- 增加上下文窗口重排
-- 记住上次导入的书籍和向量索引
-- 接入 PDF 可视化高亮，而不只是文本列表
-- 支持更多语言组合
+Planned improvements include:
+
+- bidirectional lookup
+- stronger reranking with larger context windows
+- support for more file formats beyond PDF
+- persistent local document library and cached indexes
+- page-level PDF viewer with visual highlighting
+- scholar-friendly annotation and note-taking workflows
+
+## Intended Audience
+
+Gloss is especially aimed at:
+
+- scholars
+- translators
+- students doing close bilingual reading
+- researchers working with parallel texts
+
+## Status
+
+Gloss is usable as a local proof of concept for multilingual passage retrieval, but it is not yet a polished production reading environment.
+
+## License
+
+No license has been added yet.

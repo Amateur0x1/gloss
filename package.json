@@ -1,7 +1,9 @@
 {
   "name": "gloss",
+  "description": "A local-first macOS app for multilingual parallel reading and scholarly passage alignment.",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.1.0",
+  "author": "Amateur0x1",
   "main": "dist-electron/main.js",
   "type": "module",
   "scripts": {
@@ -9,11 +11,38 @@
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "desktop:preview": "pnpm build && electron ."
+    "desktop:preview": "pnpm build && electron .",
+    "dist:mac": "pnpm build && electron-builder --mac dmg zip --publish never"
+  },
+  "build": {
+    "appId": "com.amateur0x1.gloss",
+    "productName": "Gloss",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**",
+      "dist-electron/**",
+      "package.json"
+    ],
+    "asar": true,
+    "mac": {
+      "category": "public.app-category.education",
+      "gatekeeperAssess": false,
+      "hardenedRuntime": false,
+      "identity": null,
+      "target": [
+        "dmg",
+        "zip"
+      ]
+    },
+    "dmg": {
+      "artifactName": "Gloss-${version}.${ext}"
+    },
+    "artifactName": "Gloss-${version}-${arch}.${ext}"
   },
   "dependencies": {
     "@huggingface/transformers": "^3.8.1",
-    "electron": "^41.0.3",
     "pdfjs-dist": "^5.5.207",
     "react": "^19.2.4",
     "react-dom": "^19.2.4"
@@ -26,6 +55,8 @@
     "@vitejs/plugin-react": "^6.0.1",
     "concurrently": "^9.2.1",
     "cross-env": "^10.1.0",
+    "electron": "^41.0.3",
+    "electron-builder": "^26.8.1",
     "eslint": "^9.39.4",
     "eslint-plugin-react-hooks": "^7.0.1",
     "eslint-plugin-react-refresh": "^0.5.2",
