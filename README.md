@@ -1,6 +1,6 @@
-# Parallel Text Finder
+# Gloss
 
-一个纯本地运行的 macOS 桌面应用，面向中英 PDF 对读。
+一个纯本地运行的 macOS 桌面应用，面向多语言文本对读与学术研究。
 
 当前版本支持：
 
@@ -21,7 +21,7 @@
 ## 运行
 
 ```bash
-cd /Users/zhourongchang/self/pdf-bilingual-desktop
+cd /Users/zhourongchang/self/gloss
 pnpm install
 pnpm dev
 ```
@@ -31,13 +31,13 @@ pnpm dev
 ## 打包前预览
 
 ```bash
-cd /Users/zhourongchang/self/pdf-bilingual-desktop
+cd /Users/zhourongchang/self/gloss
 pnpm desktop:preview
 ```
 
 ## 当前边界
 
-第一版是“基于 PDF 提取文本的对读器”，不是逐字级 PDF 坐标映射器。
+第一版是“基于文档提取文本的对读器”，不是逐字级原文版面映射器。
 
 也就是说：
 

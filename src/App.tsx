@@ -218,7 +218,7 @@ function App() {
     <main className="app-shell">
       <header className="hero-panel">
         <div>
-          <p className="eyebrow">Parallel Text Finder</p>
+          <p className="eyebrow">Gloss</p>
           <h1>本地 PDF 多语言对读</h1>
           <p className="hero-copy">
             把中译本和英译本都放进来，桌面端会在本机完成文本抽取、向量化和跨语言匹配。

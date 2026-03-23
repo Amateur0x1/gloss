@@ -10,7 +10,7 @@ function createWindow() {
     height: 980,
     minWidth: 1200,
     minHeight: 760,
-    title: 'Parallel Text Finder',
+    title: 'Gloss',
     backgroundColor: '#f3ede0',
     webPreferences: {
       preload: path.join(__dirname, 'preload.mjs'),
