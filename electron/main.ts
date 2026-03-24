@@ -1,6 +1,14 @@
-import { app, BrowserWindow } from 'electron'
+import { app, BrowserWindow, ipcMain } from 'electron'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
+
+import {
+  deleteCachedIndexes,
+  initializeCacheDatabase,
+  listCachedIndexes,
+  loadCachedIndex,
+  saveCachedIndex,
+} from './cache-db'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -29,6 +37,50 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+  initializeCacheDatabase()
+
+  ipcMain.handle('cache:load', (_event, payload: { fileHash: string; language: 'zh' | 'en' }) => {
+    return loadCachedIndex(payload.fileHash, payload.language)
+  })
+
+  ipcMain.handle('cache:list', () => {
+    return listCachedIndexes()
+  })
+
+  ipcMain.handle(
+    'cache:delete',
+    (
+      _event,
+      payload: {
+        entries: Array<{
+          fileHash: string
+          language: 'zh' | 'en'
+        }>
+      },
+    ) => {
+      return deleteCachedIndexes(payload.entries)
+    },
+  )
+
+  ipcMain.handle(
+    'cache:save',
+    (
+      _event,
+      payload: {
+        fileHash: string
+        language: 'zh' | 'en'
+        work: {
+          key: string
+          title: string
+        }
+        data: Parameters<typeof saveCachedIndex>[2]
+      },
+    ) => {
+      saveCachedIndex(payload.fileHash, payload.language, payload.data, payload.work)
+      return true
+    },
+  )
+
   createWindow()
 
   app.on('activate', () => {

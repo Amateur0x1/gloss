@@ -1,31 +1,28 @@
-import { startTransition, useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 import './App.css'
-import DocumentWorker from './workers/document-worker.ts?worker'
+import { HeroPanel } from './components/HeroPanel'
+import { ImportCard } from './components/ImportCard'
+import { LibraryShelf, type LibraryWork } from './components/LibraryShelf'
+import { MatchHero } from './components/MatchHero'
+import { ReaderColumns } from './components/ReaderColumns'
+import { SidebarNav } from './components/SidebarNav'
+import { WindowToolbar } from './components/WindowToolbar'
+import { INITIAL_SLOT, isWorkerEnvelope, renderStatus, SIDE_CONFIG } from './config/ui'
 import { findTopMatches } from './lib/alignment'
 import type {
+  CachedDocumentPayload,
   DocumentLanguage,
   DocumentSlotState,
+  LibraryDocument,
   ProcessDocumentPayload,
   ProcessDocumentResponse,
   WorkerEnvelope,
 } from './types'
+import DocumentWorker from './workers/document-worker.ts?worker'
 
-const INITIAL_SLOT: DocumentSlotState = {
-  status: 'idle',
-  detail: '等待导入 PDF',
-}
-
-const SIDE_CONFIG: Record<DocumentLanguage, { title: string; subtitle: string }> = {
-  zh: {
-    title: '中文译本',
-    subtitle: '选择你正在阅读的中译 PDF',
-  },
-  en: {
-    title: '英文原文',
-    subtitle: '导入对应的英文 PDF，建立本地向量索引',
-  },
-}
+const PREFERRED_LANGUAGE_STORAGE_KEY = 'gloss.preferredLanguage'
+type AppPage = 'library' | 'import' | 'reader'
 
 function App() {
   const [slots, setSlots] = useState<Record<DocumentLanguage, DocumentSlotState>>({
@@ -35,6 +32,11 @@ function App() {
   const [selectedSourceIndex, setSelectedSourceIndex] = useState(0)
   const [globalStatus, setGlobalStatus] = useState('准备就绪')
   const [error, setError] = useState<string | null>(null)
+  const [libraryDocuments, setLibraryDocuments] = useState<LibraryDocument[]>([])
+  const [preferredLanguage, setPreferredLanguage] = useState<DocumentLanguage>(() =>
+    readPreferredLanguage(),
+  )
+  const [activePage, setActivePage] = useState<AppPage>('library')
 
   const chineseInputRef = useRef<HTMLInputElement>(null)
   const englishInputRef = useRef<HTMLInputElement>(null)
@@ -44,19 +46,16 @@ function App() {
   const englishDoc = slots.en.document
   const chineseEmbeddings = slots.zh.embeddings
   const englishEmbeddings = slots.en.embeddings
+  const libraryWorks = useMemo(() => groupLibraryDocuments(libraryDocuments), [libraryDocuments])
 
   const matches = useMemo(() => {
     if (!chineseDoc || !englishDoc || !chineseEmbeddings || !englishEmbeddings) {
       return []
     }
 
-    return findTopMatches(
-      chineseEmbeddings,
-      englishEmbeddings,
-      selectedSourceIndex,
-      5,
-    )
+    return findTopMatches(chineseEmbeddings, englishEmbeddings, selectedSourceIndex, 5)
   }, [chineseDoc, chineseEmbeddings, englishDoc, englishEmbeddings, selectedSourceIndex])
+
   const bestMatch = matches[0]
 
   useEffect(() => {
@@ -74,6 +73,14 @@ function App() {
     })
   }, [bestMatch])
 
+  useEffect(() => {
+    void refreshLibrary()
+  }, [])
+
+  useEffect(() => {
+    window.localStorage.setItem(PREFERRED_LANGUAGE_STORAGE_KEY, preferredLanguage)
+  }, [preferredLanguage])
+
   const readyToCompare =
     chineseDoc !== undefined &&
     englishDoc !== undefined &&
@@ -88,7 +95,7 @@ function App() {
     patchSlot(language, {
       status: 'extracting',
       fileName: file.name,
-      detail: '正在解析 PDF 文本',
+      detail: '正在检查本地缓存',
       document: undefined,
       embeddings: undefined,
     })
@@ -96,6 +103,45 @@ function App() {
 
     try {
       const bytes = new Uint8Array(await file.arrayBuffer())
+      const fileHash = await createFileHash(bytes)
+      const cached = await loadCachedDocument(fileHash, language)
+      const work = resolveWorkMetadata(file.name, language, slots, libraryDocuments)
+
+      if (cached) {
+        const cachedDocument = {
+          ...cached.document,
+          fileName: file.name,
+        }
+
+        patchSlot(language, {
+          status: 'ready',
+          fileName: file.name,
+          workKey: work.key,
+          workTitle: work.title,
+          detail: `已从本地缓存恢复，${cachedDocument.pageCount} 页 / ${cachedDocument.segments.length} 个片段`,
+          document: cachedDocument,
+          embeddings: cached.embeddings,
+        })
+        setGlobalStatus(`已从本地缓存载入 ${file.name}`)
+
+        if (language === 'zh') {
+          setSelectedSourceIndex(0)
+        }
+        await saveCachedDocument(fileHash, language, {
+          document: cachedDocument,
+          embeddings: cached.embeddings,
+        }, work)
+        await refreshLibrary()
+        return
+      }
+
+      patchSlot(language, {
+        status: 'extracting',
+        fileName: file.name,
+        detail: '正在解析 PDF 文本',
+        document: undefined,
+        embeddings: undefined,
+      })
       const result = await processDocumentInWorker({
         requestId: crypto.randomUUID(),
         fileName: file.name,
@@ -105,16 +151,25 @@ function App() {
 
       patchSlot(language, {
         status: 'ready',
+        fileName: file.name,
+        workKey: work.key,
+        workTitle: work.title,
         detail: `完成索引，${result.document.pageCount} 页 / ${result.document.segments.length} 个片段`,
         document: result.document,
         embeddings: result.embeddings,
       })
 
       setGlobalStatus(`已完成 ${file.name} 的本地建库`)
+      await saveCachedDocument(fileHash, language, {
+        document: result.document,
+        embeddings: result.embeddings,
+      }, work)
+      await refreshLibrary()
 
       if (language === 'zh') {
         setSelectedSourceIndex(0)
       }
+      setActivePage('reader')
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : '未知错误'
       patchSlot(language, {
@@ -223,69 +278,128 @@ function App() {
     englishInputRef.current?.click()
   }
 
+  async function loadCachedDocument(fileHash: string, language: DocumentLanguage) {
+    if (!window.desktopApp?.loadCachedDocument) {
+      return null
+    }
+
+    return window.desktopApp.loadCachedDocument(fileHash, language)
+  }
+
+  async function saveCachedDocument(
+    fileHash: string,
+    language: DocumentLanguage,
+    payload: CachedDocumentPayload,
+    work: {
+      key: string
+      title: string
+    },
+  ) {
+    if (!window.desktopApp?.saveCachedDocument) {
+      return
+    }
+
+    await window.desktopApp.saveCachedDocument(fileHash, language, work, payload)
+  }
+
+  async function refreshLibrary() {
+    if (!window.desktopApp?.listCachedDocuments) {
+      return
+    }
+
+    const documents = await window.desktopApp.listCachedDocuments()
+    setLibraryDocuments(documents)
+  }
+
+  async function deleteCachedWork(work: LibraryWork) {
+    const title = resolveWorkDisplayTitle(work, preferredLanguage)
+    const confirmed = window.confirm(`删除“${title}”的本地向量缓存？`)
+    if (!confirmed || !window.desktopApp?.deleteCachedDocuments) {
+      return
+    }
+
+    const entries = (Object.values(work.documents).filter(Boolean) as LibraryDocument[]).map((document) => ({
+      fileHash: document.fileHash,
+      language: document.language,
+    }))
+
+    await window.desktopApp.deleteCachedDocuments(entries)
+
+    setSlots((current) => {
+      const next = { ...current }
+      for (const language of ['zh', 'en'] as DocumentLanguage[]) {
+        if (current[language].workKey === work.id) {
+          next[language] = { ...INITIAL_SLOT }
+        }
+      }
+      return next
+    })
+
+    setSelectedSourceIndex(0)
+    setError(null)
+    setGlobalStatus(`已删除 ${title} 的本地缓存`)
+    await refreshLibrary()
+  }
+
+  async function openCachedDocument(work: LibraryWork) {
+    setError(null)
+    const entries = (['zh', 'en'] as DocumentLanguage[])
+      .map((language) => work.documents[language])
+      .filter((value): value is LibraryDocument => Boolean(value))
+
+    if (entries.length === 0) {
+      setError('这部作品还没有可用的缓存版本。')
+      return
+    }
+
+    for (const entry of entries) {
+      patchSlot(entry.language, {
+        status: 'extracting',
+        fileName: entry.fileName,
+        detail: '正在从本地书架载入',
+        document: undefined,
+        embeddings: undefined,
+      })
+    }
+
+    let loadedCount = 0
+    for (const entry of entries) {
+      const cached = await loadCachedDocument(entry.fileHash, entry.language)
+      if (!cached) {
+        patchSlot(entry.language, {
+          status: 'error',
+          fileName: entry.fileName,
+          detail: '缓存不存在或已损坏，请重新导入该文档。',
+        })
+        continue
+      }
+
+    patchSlot(entry.language, {
+      status: 'ready',
+      fileName: cached.document.fileName,
+      workKey: entry.workKey,
+      workTitle: entry.workTitle,
+      detail: `已从本地书架载入，${cached.document.pageCount} 页 / ${cached.document.segments.length} 个片段`,
+      document: cached.document,
+      embeddings: cached.embeddings,
+      })
+      loadedCount += 1
+    }
+
+    if (work.documents.zh) {
+      setSelectedSourceIndex(0)
+    }
+
+    if (loadedCount > 0) {
+      setGlobalStatus(`已载入 ${work.title} 的 ${loadedCount} 个版本`)
+      setActivePage('reader')
+    } else {
+      setError('这部作品的缓存不存在或已损坏，请重新导入。')
+    }
+  }
+
   return (
     <main className="app-shell">
-      <header className="hero-panel">
-        <div>
-          <p className="eyebrow">Gloss</p>
-          <h1>本地 PDF 多语言对读</h1>
-          <p className="hero-copy">
-            把中译本和英译本都放进来，桌面端会在本机完成文本抽取、向量化和跨语言匹配。
-            选中左侧中文句段，右侧会自动定位最可能对应的英文原文。
-          </p>
-        </div>
-        <div className="status-cluster">
-          <span className="status-pill">macOS Desktop</span>
-          <span className="status-pill">
-            {window.desktopApp?.platform ? `Platform: ${window.desktopApp.platform}` : 'Electron'}
-          </span>
-          <span className="status-pill accent">Embedding: Multilingual MiniLM</span>
-        </div>
-      </header>
-
-      <section className="control-grid">
-        {(['zh', 'en'] as DocumentLanguage[]).map((language) => {
-          const slot = slots[language]
-          const side = SIDE_CONFIG[language]
-
-          return (
-            <article key={language} className="import-card">
-              <div className="import-card__header">
-                <div>
-                  <p className="panel-tag">{language === 'zh' ? 'Source' : 'Target'}</p>
-                  <h2>{side.title}</h2>
-                  <p>{side.subtitle}</p>
-                </div>
-                <button className="primary-button" onClick={() => openPicker(language)}>
-                  {slot.document ? '重新导入' : '选择 PDF'}
-                </button>
-              </div>
-
-              <dl className="meta-grid">
-                <div>
-                  <dt>文件</dt>
-                  <dd>{slot.fileName ?? '未选择'}</dd>
-                </div>
-                <div>
-                  <dt>状态</dt>
-                  <dd>{renderStatus(slot.status)}</dd>
-                </div>
-                <div>
-                  <dt>片段</dt>
-                  <dd>{slot.document?.segments.length ?? 0}</dd>
-                </div>
-                <div>
-                  <dt>页数</dt>
-                  <dd>{slot.document?.pageCount ?? 0}</dd>
-                </div>
-              </dl>
-
-              <p className="slot-detail">{slot.detail}</p>
-            </article>
-          )
-        })}
-      </section>
-
       <input
         ref={chineseInputRef}
         hidden
@@ -313,146 +427,225 @@ function App() {
         }}
       />
 
-      <section className="notice-bar">
-        <p>{globalStatus}</p>
-        <p>首次使用会下载模型到本地缓存。之后同一台机器可重复复用。</p>
-      </section>
+      <div className="window-shell">
+        <WindowToolbar platformLabel={window.desktopApp?.platform ?? 'Electron'} />
+        <div className="workspace-shell">
+          <SidebarNav activePage={activePage} onChange={setActivePage} />
 
-      {error ? <section className="error-banner">{error}</section> : null}
+          <div className="workspace-main">
+            {activePage === 'library' ? (
+              <>
+                <HeroPanel globalStatus={globalStatus} />
+                <LibraryShelf
+                  works={libraryWorks}
+                  preferredLanguage={preferredLanguage}
+                  onPreferredLanguageChange={setPreferredLanguage}
+                  onOpen={openCachedDocument}
+                  onDelete={(work) => {
+                    void deleteCachedWork(work)
+                  }}
+                />
+              </>
+            ) : null}
 
-      {readyToCompare && selectedSource && selectedTarget ? (
-        <>
-          <section className="match-hero">
-            <div className="match-card">
-              <p className="panel-tag">当前中文片段</p>
-              <p className="quote">{selectedSource.text}</p>
-              <p className="quote-meta">第 {selectedSource.page} 页</p>
-            </div>
-            <div className="match-card match-card--accent">
-              <p className="panel-tag">最可能对应的英文原文</p>
-              <p className="quote">{selectedTarget.text}</p>
-              <p className="quote-meta">
-                第 {selectedTarget.page} 页 · 相关度 {(bestMatch.score * 100).toFixed(1)}%
-              </p>
-            </div>
-          </section>
+            {activePage === 'import' ? (
+              <>
+                <HeroPanel globalStatus={globalStatus} />
+                <section className="control-grid">
+                  {(['zh', 'en'] as DocumentLanguage[]).map((language) => {
+                    const slot = slots[language]
+                    const side = SIDE_CONFIG[language]
 
-          <section className="reader-layout">
-            <article className="reader-panel">
-              <div className="reader-panel__header">
-                <h2>中文句段</h2>
-                <p>点击左侧任意一句，右边会自动定位最相近的英文段落。</p>
-              </div>
-              <div className="segment-list">
-                {chineseDoc.segments.map((segment) => (
-                  <button
-                    key={segment.id}
-                    className={`segment-card ${
-                      segment.index === selectedSourceIndex ? 'segment-card--active' : ''
-                    }`}
-                    onClick={() =>
-                      startTransition(() => {
-                        setSelectedSourceIndex(segment.index)
-                      })
-                    }
-                  >
-                    <span className="segment-page">P.{segment.page}</span>
-                    <span>{segment.text}</span>
-                  </button>
-                ))}
-              </div>
-            </article>
+                    return (
+                      <ImportCard
+                        key={language}
+                        language={language}
+                        slot={slot}
+                        title={side.title}
+                        subtitle={side.subtitle}
+                        statusLabel={renderStatus(slot.status)}
+                        onImport={() => openPicker(language)}
+                      />
+                    )
+                  })}
+                </section>
+              </>
+            ) : null}
 
-            <article className="reader-panel">
-              <div className="reader-panel__header">
-                <h2>英文句段</h2>
-                <p>顶部展示最优命中，列表里高亮对应位置，方便继续对读。</p>
-              </div>
+            {activePage === 'reader' ? (
+              <>
+                <section className="notice-bar">
+                  <p>{globalStatus}</p>
+                  <p>首次使用会下载模型到本地缓存。之后同一台机器可重复复用。</p>
+                </section>
 
-              <div className="match-list">
-                {matches.map((match, index) => {
-                  const segment = englishDoc.segments[match.targetIndex]
-                  if (!segment) {
-                    return null
-                  }
+                {error ? <section className="error-banner">{error}</section> : null}
 
-                  return (
-                    <div key={`${segment.id}-${index}`} className="match-chip">
-                      <span>Top {index + 1}</span>
-                      <strong>{(match.score * 100).toFixed(1)}%</strong>
-                      <span>{segment.text.slice(0, 72)}{segment.text.length > 72 ? '...' : ''}</span>
-                    </div>
-                  )
-                })}
-              </div>
+                {readyToCompare && selectedSource && selectedTarget ? (
+                  <>
+                    <MatchHero
+                      sourceText={selectedSource.text}
+                      sourcePage={selectedSource.page}
+                      targetText={selectedTarget.text}
+                      targetPage={selectedTarget.page}
+                      score={bestMatch.score}
+                    />
 
-              <div className="segment-list">
-                {englishDoc.segments.map((segment) => {
-                  const rank = matches.findIndex((match) => match.targetIndex === segment.index)
-
-                  return (
-                    <div
-                      key={segment.id}
-                      data-target-segment={segment.index}
-                      className={`segment-card segment-card--static ${
-                        rank === 0 ? 'segment-card--matched' : ''
-                      } ${rank > 0 ? 'segment-card--secondary' : ''}`}
-                    >
-                      <div className="segment-topline">
-                        <span className="segment-page">P.{segment.page}</span>
-                        {rank >= 0 ? <span className="rank-badge">Top {rank + 1}</span> : null}
-                      </div>
-                      <span>{segment.text}</span>
-                    </div>
-                  )
-                })}
-              </div>
-            </article>
-          </section>
-        </>
-      ) : (
-        <section className="empty-state">
-          <h2>先导入中英两个 PDF</h2>
-          <p>
-            第一版聚焦“本地文本抽取 + 句段对齐”。也就是说，我们先把 PDF 提取成可读文本，再做跨语言向量匹配，
-            这样能比较稳定地完成中英对读。
-          </p>
-        </section>
-      )}
+                    <ReaderColumns
+                      chineseDoc={chineseDoc}
+                      englishDoc={englishDoc}
+                      selectedSourceIndex={selectedSourceIndex}
+                      matches={matches}
+                      onSelectSource={setSelectedSourceIndex}
+                    />
+                  </>
+                ) : (
+                  <section className="empty-state">
+                    <p className="panel-tag">Reader</p>
+                    <h2>从书架选择一部作品，或先导入两个版本</h2>
+                    <p>当同一部作品下已有多语言版本时，点击书架卡片就会自动载入到这里。</p>
+                  </section>
+                )}
+              </>
+            ) : null}
+          </div>
+        </div>
+      </div>
     </main>
   )
 }
 
-function isWorkerEnvelope(value: unknown): value is WorkerEnvelope<ProcessDocumentResponse> {
-  if (!value || typeof value !== 'object') {
-    return false
+export default App
+
+function readPreferredLanguage(): DocumentLanguage {
+  if (typeof window === 'undefined') {
+    return 'zh'
   }
 
-  const maybeEnvelope = value as Partial<WorkerEnvelope<ProcessDocumentResponse>>
-  return (
-    maybeEnvelope.channel === 'document-processing' &&
-    typeof maybeEnvelope.requestId === 'string' &&
-    !!maybeEnvelope.payload &&
-    typeof maybeEnvelope.payload === 'object' &&
-    'type' in maybeEnvelope.payload
+  const stored = window.localStorage.getItem(PREFERRED_LANGUAGE_STORAGE_KEY)
+  return stored === 'en' ? 'en' : 'zh'
+}
+
+async function createFileHash(bytes: Uint8Array) {
+  const input = new Uint8Array(bytes.byteLength)
+  input.set(bytes)
+  const digest = await crypto.subtle.digest('SHA-256', input.buffer as ArrayBuffer)
+  return Array.from(new Uint8Array(digest))
+    .map((value) => value.toString(16).padStart(2, '0'))
+    .join('')
+}
+
+function groupLibraryDocuments(documents: LibraryDocument[]): LibraryWork[] {
+  const groups = new Map<string, LibraryWork>()
+
+  for (const document of documents) {
+    const key = document.workKey
+    const existing = groups.get(key)
+
+    if (existing) {
+      existing.documents[document.language] = document
+      if (new Date(document.updatedAt) > new Date(existing.updatedAt)) {
+        existing.updatedAt = document.updatedAt
+      }
+      continue
+    }
+
+    groups.set(key, {
+      id: key,
+      title: document.workTitle,
+      documents: {
+        [document.language]: document,
+      },
+      updatedAt: document.updatedAt,
+    })
+  }
+
+  return Array.from(groups.values()).sort(
+    (left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime(),
   )
 }
 
-function renderStatus(status: DocumentSlotState['status']) {
-  switch (status) {
-    case 'idle':
-      return '等待导入'
-    case 'extracting':
-      return '解析中'
-    case 'embedding':
-      return '向量化中'
-    case 'ready':
-      return '可对读'
-    case 'error':
-      return '失败'
-    default:
-      return status
+function normalizeWorkTitle(fileName: string) {
+  return stripExtension(fileName)
+    .toLowerCase()
+    .replace(/[_-]+/g, ' ')
+    .replace(/\b(zh|cn|中文|中译本|译本|en|eng|english|英文|原文|de|deu|german|德文)\b/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function prettifyWorkTitle(fileName: string) {
+  return stripExtension(fileName)
+    .replace(/[_-]+/g, ' ')
+    .replace(/\b(zh|cn|中文|中译本|译本|en|eng|english|英文|原文|de|deu|german|德文)\b/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function stripExtension(fileName: string) {
+  return fileName.replace(/\.[^.]+$/, '')
+}
+
+function resolveWorkMetadata(
+  fileName: string,
+  language: DocumentLanguage,
+  slots: Record<DocumentLanguage, DocumentSlotState>,
+  libraryDocuments: LibraryDocument[],
+) {
+  const oppositeLanguage: DocumentLanguage = language === 'zh' ? 'en' : 'zh'
+  const oppositeSlot = slots[oppositeLanguage]
+  if (oppositeSlot?.workKey && oppositeSlot.workTitle) {
+    return {
+      key: oppositeSlot.workKey,
+      title: oppositeSlot.workTitle,
+    }
+  }
+
+  const normalizedTitle = normalizeWorkTitle(fileName)
+  const relatedDocument = libraryDocuments.find((document) => {
+    if (document.language !== oppositeLanguage) {
+      return false
+    }
+
+    if (document.workKey === normalizedTitle) {
+      return true
+    }
+
+    return normalizeWorkTitle(document.fileName) === normalizedTitle
+  })
+
+  if (relatedDocument?.workKey && relatedDocument.workTitle) {
+    return {
+      key: relatedDocument.workKey,
+      title: relatedDocument.workTitle,
+    }
+  }
+
+  return {
+    key: normalizedTitle,
+    title: prettifyWorkTitle(fileName),
   }
 }
 
-export default App
+function resolveWorkDisplayTitle(work: LibraryWork, preferredLanguage: DocumentLanguage) {
+  const preferredDocument = work.documents[preferredLanguage]
+  if (preferredLanguage === 'zh' && preferredDocument?.workTitleZh) {
+    return preferredDocument.workTitleZh
+  }
+  if (preferredLanguage === 'en' && preferredDocument?.workTitleEn) {
+    return preferredDocument.workTitleEn
+  }
+  if (preferredDocument?.workTitle) {
+    return preferredDocument.workTitle
+  }
+
+  const fallbackLanguage: DocumentLanguage = preferredLanguage === 'zh' ? 'en' : 'zh'
+  const fallbackDocument = work.documents[fallbackLanguage]
+  if (fallbackLanguage === 'zh' && fallbackDocument?.workTitleZh) {
+    return fallbackDocument.workTitleZh
+  }
+  if (fallbackLanguage === 'en' && fallbackDocument?.workTitleEn) {
+    return fallbackDocument.workTitleEn
+  }
+  return fallbackDocument?.workTitle ?? work.title
+}

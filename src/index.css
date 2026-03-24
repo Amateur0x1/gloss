@@ -1,14 +1,13 @@
 :root {
   font-family:
-    'Iowan Old Style', 'Palatino Linotype', 'Book Antiqua', Baskerville,
-    Georgia, serif;
+    'SF Pro Display', 'SF Pro Text', 'Inter', 'Helvetica Neue', Arial, sans-serif;
   line-height: 1.5;
   font-weight: 400;
-  color: #34261a;
+  color: #1f1f21;
   background:
-    radial-gradient(circle at top left, rgba(255, 230, 205, 0.9), transparent 34%),
-    radial-gradient(circle at top right, rgba(226, 182, 129, 0.25), transparent 28%),
-    linear-gradient(180deg, #f6efe5, #efe4d4);
+    radial-gradient(circle at top left, rgba(255, 255, 255, 0.92), transparent 30%),
+    radial-gradient(circle at top right, rgba(237, 240, 246, 0.95), transparent 34%),
+    linear-gradient(180deg, #f2f3f5, #eceef1);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -27,6 +26,9 @@ body,
 
 body {
   margin: 0;
+  background:
+    radial-gradient(circle at top, rgba(255, 255, 255, 0.78), transparent 30%),
+    linear-gradient(180deg, #eff1f4 0%, #ebecef 100%);
 }
 
 button,

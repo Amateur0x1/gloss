@@ -26,6 +26,8 @@ export interface DocumentSlotState {
   status: 'idle' | 'extracting' | 'embedding' | 'ready' | 'error'
   detail: string
   fileName?: string
+  workKey?: string
+  workTitle?: string
   document?: ParsedPdfDocument
   embeddings?: number[][]
 }
@@ -47,6 +49,24 @@ export interface ProcessDocumentSuccess {
   type: 'success'
   document: ParsedPdfDocument
   embeddings: number[][]
+}
+
+export interface CachedDocumentPayload {
+  document: ParsedPdfDocument
+  embeddings: number[][]
+}
+
+export interface LibraryDocument {
+  fileHash: string
+  language: DocumentLanguage
+  fileName: string
+  workKey: string
+  workTitle: string
+  workTitleZh?: string
+  workTitleEn?: string
+  pageCount: number
+  segmentCount: number
+  updatedAt: string
 }
 
 export interface ProcessDocumentProgress {
